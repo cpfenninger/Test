@@ -1,0 +1,229 @@
+=================================================================================================================================
+1. Root CA erstellen
+
+1.1 Directories erstellen:
+mkdir -p demoCA/certs
+cd demoCA
+mkdir crl newcerts requests private
+chmod 700 private
+cd
+
+/etc/ssl/openssl.cnf anpassen, falls ein anderes Directory oder Cert. Namen als default benötigt werden.
+
+1.2 Root CA erstellen
+openssl req -new -x509 -keyout demoCA/private/cakey.pem -out demoCA/cacert.pem -days 3652 -newkey rsa:4096
+
+1.3 Server Cert. Request erstellen
+openssl req -new -keyout demoCA/private/server_key.pem -out demoCA/requests/server_req.pem -newkey rsa:2048
+
+1.4 Server Cert. erstellen
+touch demoCA/index.txt
+echo 01 > demoCA/serial
+
+openssl ca -policy policy_anything -days 365 -out demoCA/certs/server_crt.pem -infiles demoCA/requests/server_req.pem
+
+=================================================================================================================================
+2. GPG Key erstellen
+
+Als User einloggen für den der Key erstellt werden soll.
+Kontrollieren ob das ~/.gnupg Dir schon besteht
+
+2.1 GPG Key erstellen
+gpg --gen-key
+
+2.2 Key anzeigen lassen
+gpg --list-keys
+gpg --list-sigs
+gpg --check-sigs
+gpg --fingerprint
+
+=================================================================================================================================
+3. SW Repo erstellen und signieren
+
+3.1 createrepo vorhanden
+zypper se createrepo oder rpm -q createrepo
+
+3.1.1 Falls nicht vorhanden:
+zypper in createrepo
+
+3.2 Directory Struktur erstellen zum Beisp:
+mkdir -p /install/SLE-zip
+mkdir -p /install/SLE-zip/x86_64
+
+cp -v /home/tux/rpmbuild/RPMS/x86_64/* /install/SLE-zip/x86_64/
+
+3.3 Repo erstellen
+createrepo /install/SLE-zip
+
+3.4 Repo checken und anhängen
+zypper lr -u
+
+zypper ar -f dir:///install/SLE-zip SLE-zip
+zypper lr
+zypper pa -ir <repo-number-here>
+
+3.5 Repo signieren
+zypper lr
+sudo cp /install/SLE-zip/repodata/repomd.xml .gpg
+
+gpg --export -a > repomd.xml.key
+  (creates repomd.xml.asc)
+ls -l ~/repomd*
+sudo cp repomd.xml.* /install/SLE-zip/repodata/
+
+zypper lr
+zypper rr <repo-number> (Repo entfernen)
+Repo via YAST (besser) oder 
+zypper ar -f dir:///install/SLE-zip SLE-zip (hinzufügen) 
+zypper lr (check ob das Repo nun als signiert sprich r in der GGP Kolone mit (r ) aufgeführt ist)
+
+=================================================================================================================================
+4. RPM erstellen und signieren
+
+4.1 Directories erstellen
+mkdir ~/rpmbuild
+sudo cp -r /usr/src/packages/* ~/rpmbuild (Source Daten kopieren)
+sudo chown -R tux.users ~/rpmbuild (User tux ist nun der Owner und users die Gruppe des Dir.)
+
+4.2 Tarball aus den Source Daten erstellen
+mkdir ~/rpmtmp
+cp -v ~/zip-3.0-2.22.src.rpm ~/rpmtmp (Files welceh im RPM sein sollen in das temp. Dir kopieren)
+cd ~/rpmtmp
+rpm2cpio zip-3.0-2.22.src.rpm | cpio -idmv (Dateien aus dem Source RPM extrahierern)
+rm zip-3.0-2.22.src.rpm (origonal File löschen)
+tar tvf zip30.tar.gz (Inhalte des Files auflisten)
+cp ~/rpmtmp/zip30.tar.gz ~/rpmbuild/SOURCES/ (Tarball vom Staging ins Build Dir. kopieren)
+cp ~/rpmtmp/*.patch ~/rpmbuild/SOURCES/ (da im .spec File Patches angegen sind diese auch ins Build Dir. kopieren)
+
+4.3 .spec File editieren
+cp ~/rpmtmp/zip.spec ~/rpmbuild/SPECS (.spec File kopieren)
+Im VIM das File nach Bedarf anpassen z.B. in der BuildRoot Sektion
+
+4.4 RPM File generieren
+zypper se rpm-build (rpm-build suchen)
+sudo zypper --non-interactive in rpm-build libbz2-devel (rpm-build installieren)
+
+cd ~/rpmbuild/SPECS
+rpmbuild -ba zip.spec
+
+ls -l ~/rpmbuild/RPMS/x86_64/
+ls -l ~/rpmbuild/SRPMS/
+
+4.5 RPM Paket installieren
+su -
+rpm -q zip
+rpm -e zip
+exit
+
+cd ~/rpmbuild/RPMS/x86_64
+sudo rpm -Uvh zip-3.0-2.22.x86_64.rpm
+
+rpm -qi zip (überprüfen ob alles korrekt ist)
+
+
+4.6 GPG Key erstellen (User tux)
+check on ~/.gnupg bereits existiert und bereits etwas drin hat
+
+gpg --gen-key (Key erstellen)
+
+4.6.2 Key überprüfen
+gpg --list-keys
+gpg --list-sigs
+gpg --check-sigs
+gpg --fingerprint
+
+4.7 RPM signieren (User tux)
+4.7.1 Export Key
+gpg --export -a > ~/rpm-gpg-key-tuxpenguin (Key exportieren)
+
+sudo rpm --import ~/rpm-gpg-key-tuxpenguin (import Key in RPM DB)
+
+rpm -q gpg-pubkey --qf '%{name}-%{version}-%{release} --> %{summary}\n' (Key überprüfen)
+
+4.7.2 Edit Macro File
+vim  ~/.rpmmacros
+
+Folgende Einträge einfügen:
+%_signature gpg
+%_gpg_name SUSE Training Services Signing Key
+%_gpg_path /home/tux/.gnupg
+%_gpgbin /usr/bin/gpg
+
+
+4.7.3 RPM File erstellen und signieren (User tux)
+rm ~/rpmbuild/RPMS/*
+rm ~/rpmbuild/SRPMS/*
+
+Erstellen:
+cd ~/rpmbuild/SPECS
+rpmbuild -ba --sign zip.spec
+
+Überprüfen:
+ls -l ~/rpmbuild/RPMS/x86_64/
+ls -l ~/rpmbuild/SRPMS/
+
+4.7.4 Signatur testen
+su -
+rpm -qa gpg-pubkey
+
+überprüfen ob das RPM signed ist:
+cd /home/tux/rpmbuild/RPMS/x86_64
+rpm -K zip-3.0-2.22.x86_64.rpm
+
+rpm -qpi zip-3.0-2.22.x86_64.rpm
+
+Noch mehr Details prüfen:
+rpm -q gpg-pubkey --qf '%{name}-%{version}-%{release} --> %{summary}\n’
+
+
+=================================================================================================================================
+5. Shell Script für Monitoring erstellen
+
+5.1 Wichtigstes Element in einem Script
+#!/bin/bash
+
+5.2 Monitoring Einträge
+zypper se sysstat
+zypper in sysstat
+
+
+sar -u -o /xyz/xyz/report.txt 1 10 (für Anzeige von CPU Stats.)
+
+oder
+
+sar -u -r -d -o /xyz/xyz/report.txt 1 10 (für Anzeige von CPU, Memory und Disk Stats.)
+
+
+Mail -s "subject from the exam task" -a /xyz/xyz/report.txt root@localhost < /dev/null
+
+
+================================================================================================================================= 
+
+6. cgroups
+
+Befinden sich unter /sys/fs/cgroup/
+cd cp	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+================================================================================================================================= 
+
+7. Network Namespaces
+
+
+
+
+================================================================================================================================= 
+
+8. Salt
